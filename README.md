@@ -1,2 +1,2 @@
 # pokemon-lakehouse
-Initial Databricks Git integration test.
+##A Databricks Lakehouse for Pokémon TCG Metagame Analytics
