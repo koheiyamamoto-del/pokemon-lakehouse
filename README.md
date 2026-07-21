@@ -1,2 +1,2 @@
 # pokemon-lakehouse
-##A Databricks Lakehouse for Pokémon TCG Metagame Analytics
+## A Databricks Lakehouse for Pokémon TCG Metagame Analytics
