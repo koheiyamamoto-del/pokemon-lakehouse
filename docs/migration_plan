@@ -1,0 +1,929 @@
+# Pokémon Lakehouse v2 Notebook Inventory and Migration Plan
+
+## 1. 目的
+
+Pokémon LakehouseのNotebookを整理し、以下を実現する。
+
+* どのNotebookが本番で必要か明確にする
+* 古いNotebookと現行Notebookを区別する
+* Bronze・Silver・Gold・Opsのスキーマを統一する
+* Databricks Workflowへ安全に移行する
+* 同じ目的のNotebookが複数存在する状態を解消する
+
+---
+
+# 2. v2の正規ディレクトリ構成
+
+```text
+pokemon-lakehouse/
+│
+├── notebooks/
+│   │
+│   ├── 00_migration/
+│   │   ├── 00_inventory_existing_tables
+│   │   ├── 01_create_v2_schemas
+│   │   ├── 02_create_v2_tables
+│   │   ├── 03_migrate_existing_data
+│   │   └── 04_validate_v2_migration
+│   │
+│   ├── 01_ingest/
+│   │   ├── 00_ingest_tournament_list
+│   │   ├── 01_ingest_event_results
+│   │   └── 02_ingest_decks
+│   │
+│   ├── 02_silver/
+│   │   ├── 00_build_tournaments
+│   │   ├── 01_identify_result_fetch_targets
+│   │   ├── 02_build_tournament_results
+│   │   ├── 03_identify_deck_fetch_targets
+│   │   ├── 04_build_decks
+│   │   └── 05_build_deck_cards
+│   │
+│   ├── 03_gold/
+│   │   ├── 00_build_card_usage
+│   │   ├── 01_build_deck_registry
+│   │   ├── 02_build_deck_pokemon_features
+│   │   └── 03_build_deck_similarity
+│   │
+│   ├── 04_ml/
+│   │   ├── 00_build_deck_archetypes
+│   │   └── 01_validate_archetypes
+│   │
+│   ├── 05_ops/
+│   │   ├── 00_initialize_pipeline_run
+│   │   ├── 01_finalize_pipeline_task
+│   │   ├── 02_validate_daily_pipeline
+│   │   └── 03_validate_weekly_ml_pipeline
+│   │
+│   └── 99_analysis/
+│       ├── 00_metagame_analysis
+│       ├── 01_deck_similarity_explorer
+│       └── 02_archetype_analysis
+│
+├── src/
+│   └── pokemon_lakehouse/
+│       ├── config.py
+│       ├── hashing.py
+│       ├── http.py
+│       ├── logging.py
+│       ├── parsing.py
+│       └── validation.py
+│
+└── docs/
+    ├── architecture.md
+    ├── notebook_inventory.md
+    ├── data_dictionary.md
+    └── adr/
+```
+
+---
+
+# 3. 本番に必要なNotebook一覧
+
+## Migration
+
+Migration Notebookは通常運用には含めない。
+
+### 00_inventory_existing_tables
+
+目的：
+
+* 現在存在するテーブル一覧を取得
+* 列名、型、nullableを確認
+* 行数を取得
+* v2との差分を整理
+
+出力：
+
+```text
+pokemon.ops.migration_inventory
+```
+
+状態：
+
+```text
+新規作成
+```
+
+---
+
+### 01_create_v2_schemas
+
+目的：
+
+以下のSchemaを作成する。
+
+```text
+pokemon.bronze
+pokemon.silver
+pokemon.gold
+pokemon.ops
+```
+
+状態：
+
+```text
+新規作成
+```
+
+---
+
+### 02_create_v2_tables
+
+目的：
+
+v2標準スキーマのテーブルを作成する。
+
+このNotebookだけをテーブル定義の正とする。
+
+状態：
+
+```text
+新規作成
+```
+
+---
+
+### 03_migrate_existing_data
+
+目的：
+
+既存テーブルからv2テーブルへデータを移行する。
+
+状態：
+
+```text
+新規作成
+```
+
+---
+
+### 04_validate_v2_migration
+
+目的：
+
+* 件数比較
+* 主キー重複確認
+* Null確認
+* ハッシュ整合性確認
+* 旧テーブルとの比較
+
+状態：
+
+```text
+新規作成
+```
+
+---
+
+# 4. Ingest Notebook
+
+## 00_ingest_tournament_list
+
+入力：
+
+```text
+公式 event_search API
+```
+
+出力：
+
+```text
+pokemon.bronze.tournament_list_raw
+pokemon.bronze.scrape_log
+```
+
+責務：
+
+* 大会一覧ページング
+* 2026年以前まで到達したら停止
+* ページ単位レスポンス保存
+* offset + response_hashで重複排除
+
+状態：
+
+```text
+REWRITE
+```
+
+既存Notebookをベースにv2スキーマへ合わせて作り直す。
+
+---
+
+## 01_ingest_event_results
+
+入力：
+
+```text
+pokemon.ops.result_fetch_targets
+```
+
+出力：
+
+```text
+pokemon.bronze.event_result_raw
+pokemon.bronze.scrape_log
+```
+
+責務：
+
+* 複数大会結果取得
+* tournament_id + response_hashで重複排除
+* success / success_empty / skipped_unchanged / error
+* 一部失敗時も成功分保存
+
+状態：
+
+```text
+REWRITE
+```
+
+現在修正中のNotebookはv2正式版として再構築する。
+
+---
+
+## 02_ingest_decks
+
+入力：
+
+```text
+pokemon.ops.deck_fetch_targets
+```
+
+出力：
+
+```text
+pokemon.bronze.deck_raw
+pokemon.bronze.scrape_log
+```
+
+責務：
+
+* 複数deck_code取得
+* deck_code + response_hashで重複排除
+* 失敗ログ保存
+
+状態：
+
+```text
+REWRITE
+```
+
+---
+
+# 5. Silver Notebook
+
+## 00_build_tournaments
+
+入力：
+
+```text
+pokemon.bronze.tournament_list_raw
+```
+
+出力：
+
+```text
+pokemon.silver.tournaments
+```
+
+責務：
+
+* event配列展開
+* 2026年以降に限定
+* tournament_idでMERGE
+* event_hash変更時のみUPDATE
+
+状態：
+
+```text
+REWRITE
+```
+
+既存の列名揺れを廃止する。
+
+---
+
+## 01_identify_result_fetch_targets
+
+入力：
+
+```text
+pokemon.silver.tournaments
+pokemon.bronze.event_result_raw
+pokemon.bronze.scrape_log
+pokemon.silver.tournament_results
+```
+
+出力：
+
+```text
+pokemon.ops.result_fetch_targets
+```
+
+責務：
+
+```text
+never_fetched
+retry_error
+retry_empty
+tournament_updated
+```
+
+状態：
+
+```text
+KEEPまたは軽微修正
+```
+
+v2スキーマ確定後に列名を統一する。
+
+---
+
+## 02_build_tournament_results
+
+入力：
+
+```text
+pokemon.bronze.event_result_raw
+```
+
+出力：
+
+```text
+pokemon.silver.tournament_results
+```
+
+責務：
+
+* 最新レスポンス選択
+* 順位、プレイヤー、deck_code展開
+* result_hash生成
+* MERGE
+
+状態：
+
+```text
+REWRITE
+```
+
+---
+
+## 03_identify_deck_fetch_targets
+
+入力：
+
+```text
+pokemon.silver.tournament_results
+pokemon.bronze.deck_raw
+pokemon.bronze.scrape_log
+```
+
+出力：
+
+```text
+pokemon.ops.deck_fetch_targets
+```
+
+責務：
+
+```text
+never_fetched
+retry_error
+parse_error
+manual_refetch
+```
+
+状態：
+
+```text
+新規作成
+```
+
+---
+
+## 04_build_decks
+
+入力：
+
+```text
+pokemon.bronze.deck_raw
+```
+
+出力：
+
+```text
+pokemon.silver.decks
+```
+
+責務：
+
+* HTMLパース
+* canonical_string生成
+* deck_hash生成
+* deck_codeでMERGE
+
+状態：
+
+```text
+REWRITE
+```
+
+既存の安定版パーサーを移植する。
+
+---
+
+## 05_build_deck_cards
+
+入力：
+
+```text
+pokemon.bronze.deck_raw
+pokemon.silver.decks
+```
+
+出力：
+
+```text
+pokemon.silver.deck_cards
+```
+
+責務：
+
+* 1 deck_code × 1カード単位に展開
+* categoryの完全一致
+* quantity正規化
+
+状態：
+
+```text
+REWRITE
+```
+
+---
+
+# 6. Gold Notebook
+
+## 00_build_card_usage
+
+入力：
+
+```text
+pokemon.silver.deck_cards
+pokemon.silver.tournament_results
+```
+
+出力：
+
+```text
+pokemon.gold.card_usage
+```
+
+状態：
+
+```text
+KEEPまたは軽微修正
+```
+
+---
+
+## 01_build_deck_registry
+
+入力：
+
+```text
+pokemon.silver.decks
+pokemon.silver.tournament_results
+```
+
+出力：
+
+```text
+pokemon.gold.deck_registry
+```
+
+状態：
+
+```text
+KEEPまたは軽微修正
+```
+
+---
+
+## 02_build_deck_pokemon_features
+
+入力：
+
+```text
+pokemon.silver.deck_cards
+pokemon.gold.deck_registry
+```
+
+出力：
+
+```text
+pokemon.gold.deck_pokemon_features
+```
+
+状態：
+
+```text
+KEEP
+```
+
+v2正式スキーマへ列名だけ合わせる。
+
+---
+
+## 03_build_deck_similarity
+
+入力：
+
+```text
+pokemon.gold.deck_pokemon_features
+pokemon.gold.deck_registry
+```
+
+出力：
+
+```text
+pokemon.gold.deck_similarity
+```
+
+状態：
+
+```text
+KEEP
+```
+
+---
+
+# 7. ML Notebook
+
+## 00_build_deck_archetypes
+
+入力：
+
+```text
+pokemon.gold.deck_similarity
+pokemon.gold.deck_registry
+pokemon.gold.deck_pokemon_features
+```
+
+出力：
+
+```text
+pokemon.gold.deck_archetypes
+```
+
+状態：
+
+```text
+KEEP
+```
+
+---
+
+## 01_validate_archetypes
+
+目的：
+
+* クラスタサイズ確認
+* Silhouette Score確認
+* 代表ポケモン確認
+* 前回クラスタとの変化確認
+
+状態：
+
+```text
+新規作成
+```
+
+---
+
+# 8. Ops Notebook
+
+## 00_initialize_pipeline_run
+
+目的：
+
+* pipeline_run_id生成
+* pipeline_run_logへrunning記録
+* Workflowパラメータ初期化
+
+状態：
+
+```text
+新規作成
+```
+
+---
+
+## 01_finalize_pipeline_task
+
+目的：
+
+* pipeline_run_log更新
+* pipeline_state MERGE
+* 件数、処理時間、エラー記録
+
+状態：
+
+```text
+新規作成
+```
+
+可能なら後にPython共通関数へ移行する。
+
+---
+
+## 02_validate_daily_pipeline
+
+目的：
+
+* 日次処理結果確認
+* 新規大会数
+* 新規結果数
+* 新規デッキ数
+* エラー件数
+
+状態：
+
+```text
+新規作成
+```
+
+---
+
+## 03_validate_weekly_ml_pipeline
+
+目的：
+
+* Similarity件数
+* クラスタ数
+* Silhouette Score
+* 新規アーキタイプ候補
+
+状態：
+
+```text
+新規作成
+```
+
+---
+
+# 9. Analysis Notebook
+
+Analysis NotebookはWorkflowに含めない。
+
+## 00_metagame_analysis
+
+目的：
+
+* 採用率
+* 大会別分布
+* アーキタイプ別成績
+
+状態：
+
+```text
+既存分析Notebookを整理して移行
+```
+
+---
+
+## 01_deck_similarity_explorer
+
+目的：
+
+* 特定デッキの類似Top N
+* 2デッキ差分
+
+状態：
+
+```text
+既存コードを移行
+```
+
+---
+
+## 02_archetype_analysis
+
+目的：
+
+* クラスタ別代表カード
+* クラスタ成績
+* 時系列変化
+
+状態：
+
+```text
+既存コードを移行
+```
+
+---
+
+# 10. 廃止対象Notebook
+
+以下はv2安定後に削除する。
+
+```text
+固定tournament_idを直接記述した大会結果取得Notebook
+固定deck_codeを直接記述したデッキ取得Notebook
+一時的なAPI確認Notebook
+旧deck_hashロジックを使うNotebook
+collection_numberをdeck_hashに含めるNotebook
+旧HTMLパーサーNotebook
+categoryを部分一致判定するNotebook
+RDDを使用するNotebook
+Playwrightを使用するNotebook
+旧tournaments作成Notebook
+同じGoldテーブルを作る複数Notebook
+```
+
+---
+
+# 11. Archiveルール
+
+すぐ削除せず、以下へ移動する。
+
+```text
+notebooks/_archive/v1/
+```
+
+ファイル名には日付と理由を付ける。
+
+例：
+
+```text
+2026-07-22_ingest_event_result_single_deprecated
+2026-07-22_build_tournaments_old_schema
+2026-07-22_deck_parser_partial_match_bug
+```
+
+Archive Notebookの先頭には必ず以下を書く。
+
+```text
+DEPRECATED
+
+Replacement:
+notebooks/01_ingest/01_ingest_event_results
+
+Reason:
+Replaced by v2 multi-tournament incremental ingestion.
+```
+
+---
+
+# 12. v2標準テーブル一覧
+
+## Bronze
+
+```text
+pokemon.bronze.tournament_list_raw
+pokemon.bronze.event_result_raw
+pokemon.bronze.deck_raw
+pokemon.bronze.scrape_log
+```
+
+## Silver
+
+```text
+pokemon.silver.tournaments
+pokemon.silver.tournament_results
+pokemon.silver.decks
+pokemon.silver.deck_cards
+```
+
+## Gold
+
+```text
+pokemon.gold.card_usage
+pokemon.gold.deck_registry
+pokemon.gold.deck_pokemon_features
+pokemon.gold.deck_similarity
+pokemon.gold.deck_archetypes
+```
+
+## Ops
+
+```text
+pokemon.ops.result_fetch_targets
+pokemon.ops.deck_fetch_targets
+pokemon.ops.pipeline_run_log
+pokemon.ops.pipeline_state
+pokemon.ops.migration_inventory
+```
+
+---
+
+# 13. Migration実施順序
+
+```text
+Step 1
+既存Notebookとテーブルを棚卸し
+
+Step 2
+v2正式スキーマを確定
+
+Step 3
+v2テーブル作成
+
+Step 4
+既存データをv2へ移行
+
+Step 5
+Ingest Notebookをv2化
+
+Step 6
+Silver Notebookをv2化
+
+Step 7
+Gold・ML Notebookを接続
+
+Step 8
+Workflowを作成
+
+Step 9
+旧NotebookをArchive
+
+Step 10
+数日間の並行検証後、旧テーブルを削除
+```
+
+---
+
+# 14. 削除ルール
+
+以下を満たすまでは、旧Notebook・旧テーブルを削除しない。
+
+```text
+v2 Daily Workflowが3回以上成功
+v2の大会件数が旧版と一致
+v2の大会結果件数が旧版以上
+v2のdeck_code件数が旧版と一致
+deck_hash再現性が確認済み
+Gold主要指標が大きく乖離しない
+```
+
+---
+
+# 15. 最終的な本番Notebook数
+
+Migrationを除く本番Notebook：
+
+```text
+Ingest    3
+Silver    6
+Gold      4
+ML        2
+Ops       4
+Analysis  3
+
+合計      22
+```
+
+Workflow対象だけなら以下。
+
+```text
+Daily Workflow   12前後
+Weekly ML         4前後
+```
+
+Analysis Notebookは本番パイプラインから分離する。
+
+---
+
+# 16. 次に作るNotebook
+
+最初に作るのは以下。
+
+```text
+notebooks/00_migration/
+└── 00_inventory_existing_tables
+```
+
+このNotebookで以下を一覧化する。
+
+```text
+catalog
+schema
+table_name
+column_name
+data_type
+nullable
+row_count
+created_at
+last_modified
+v2_action
+```
+
+`v2_action`は次のいずれか。
+
+```text
+KEEP
+MIGRATE
+REBUILD
+ARCHIVE
+DROP_AFTER_VALIDATION
+```
