@@ -61,12 +61,16 @@ See [docs/architecture.md](docs/architecture.md) for details.
 ### Gold
 
 * `pokemon.gold.card_usage`
-
-Planned:
-
+* `pokemon.gold.deck_registry`
 * `pokemon.gold.deck_pokemon_features`
 * `pokemon.gold.deck_similarity`
 * `pokemon.gold.deck_archetypes`
+* `pokemon.gold.archetype_catalog`
+* `pokemon.gold.archetype_cluster_mapping`
+* `pokemon.gold.v_deck_archetypes_named` (view)
+
+Planned:
+
 * `pokemon.gold.archetype_summary`
 * `pokemon.gold.deck_novelty`
 * `pokemon.gold.innovative_decks`
@@ -78,16 +82,21 @@ pokemon-lakehouse/
 ├── README.md
 ├── docs/
 │   ├── architecture.md
-│   └── adr/
+│   ├── operation_workflow.md
+│   ├── adr/
+│   └── migration_plan/
 ├── notebooks/
-│   ├── 00_setup/
-│   ├── 01_ingest/
-│   ├── 02_transform/
-│   ├── 03_gold/
-│   └── 04_analysis/
+│   ├── 00_migration/     # v1 → v2 schema migration (one-time)
+│   ├── 01_ingest/        # Bronze: API / HTML ingestion
+│   ├── 02_silver/        # Silver: parsing and normalization
+│   ├── 03_gold/          # Gold: usage, registry, features, similarity
+│   ├── 04_ml/            # Archetype clustering and review
+│   ├── 05_ops/           # Pipeline run init/finalize/validation
+│   ├── 99_analysis/      # Exploratory analysis (not in scheduled workflow)
+│   └── _archive/v1/      # Superseded v1 notebooks, kept for reference
 ├── src/
-├── sql/
-└── tests/
+│   └── pokemon_lakehouse/
+└── scripts/
 ```
 
 ## Implemented Pipeline
@@ -95,7 +104,7 @@ pokemon-lakehouse/
 ```text
 Tournament Result API
         ↓
-pokemon.bronze.event_result_raw
+pokemon.bronze.event_result_raw   (paginated, full result set per tournament)
         ↓
 pokemon.silver.tournaments
 pokemon.silver.tournament_results
@@ -108,18 +117,34 @@ pokemon.silver.decks
 pokemon.silver.deck_cards
         ↓
 pokemon.gold.card_usage
+pokemon.gold.deck_registry
+        ↓
+pokemon.gold.deck_pokemon_features
+        ↓
+pokemon.gold.deck_similarity
+        ↓
+pokemon.gold.deck_archetypes (per-run cluster assignment, model_run_id + cluster_signature)
+        ↓
+pokemon.gold.archetype_cluster_mapping ── human review ──▶ pokemon.gold.archetype_catalog
+        ↓
+pokemon.gold.v_deck_archetypes_named
 ```
+
+All Gold and archetype-clustering tables are rebuilt atomically on each run via `CREATE OR REPLACE TABLE AS SELECT`, so a failed run never leaves a partially-emptied table. Archetype identity (human-assigned names) is decoupled from the unstable per-run `cluster_id` via a `cluster_signature` and a separate review step (`04_ml/02_review_archetype_mapping.ipynb`), so names survive re-clustering.
 
 ## Data Quality Rules
 
 * Tournament API responses are stored before transformation
+* Tournament results are fetched across all pages, not truncated at the first page
 * Raw HTML is retained in Bronze
-* Duplicate Raw responses are detected with SHA-256 hashes
+* Duplicate Raw responses are detected with SHA-256 hashes and anti-join/MERGE dedup
 * Each parsed deck must contain exactly 60 cards
 * Deck categories are determined from exact HTML headings
 * Basic Energy cards are excluded from general card-usage metrics
 * Special Energy cards remain in card-usage analysis
 * Deck archetype similarity is based primarily on Pokémon cards
+* Gold and archetype-clustering tables are rebuilt atomically (CREATE OR REPLACE TABLE AS SELECT)
+* Archetype names are reviewed and stored independently of the unstable per-run cluster ID
 
 ## Development Workflow
 
@@ -145,10 +170,12 @@ Commit and Review
 | Silver deck pipeline        | Complete    |
 | Card parser quality fixes   | Complete    |
 | Gold card usage             | Complete    |
-| Deck hash                   | In progress |
-| Deck feature vectors        | Planned     |
-| Similarity analysis         | Planned     |
-| Archetype classification    | Planned     |
+| Deck hash / deck registry   | Complete    |
+| Deck feature vectors        | Complete    |
+| Similarity analysis         | Complete    |
+| Archetype classification    | Complete    |
+| Archetype naming (human review, stable across reruns) | Complete |
+| Atomic Gold/ML rebuilds (CTAS) | Complete |
 | Novelty detection           | Planned     |
 | Dashboard                   | Planned     |
 
@@ -168,19 +195,19 @@ Commit and Review
 * Deck-card parsing
 * Data quality validation
 
-### Phase 3 — Gold analytics
+### Phase 3 — Gold analytics (Complete)
 
 * Card usage
-* Tournament-level usage
+* Deck registry (deck hashing/dedup)
 * Pokémon-based deck features
 * Deck similarity
 
 ### Phase 4 — Machine learning
 
-* Archetype clustering
-* Archetype naming
-* Novelty scoring
-* Innovative deck detection
+* Archetype clustering (Complete)
+* Archetype naming via human-reviewed catalog (Complete)
+* Novelty scoring (Planned)
+* Innovative deck detection (Planned)
 
 ### Phase 5 — Productization
 
